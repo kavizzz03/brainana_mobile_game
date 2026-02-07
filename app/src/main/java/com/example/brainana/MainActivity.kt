@@ -2,7 +2,6 @@ package com.example.brainana
 
 import android.content.Context
 import android.net.ConnectivityManager
-import android.net.Network
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -18,10 +17,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -32,15 +33,20 @@ import okhttp3.*
 import org.json.JSONObject
 import java.io.IOException
 
-// 🎨 UPDATED COLOR PALETTE
-val MidnightBlue = Color(0xFF0A192F)
+// 🎨 CYBERPUNK PALETTE
+val MidnightBlue = Color(0xFF020817)
 val ElectricYellow = Color(0xFFFFD700)
-val CyberBlue = Color(0xFF64FFDA)
-val SoftGlass = Color(0x1AFFFFFF)
-val WarningRed = Color(0xFFFF4B2B)
-val SuccessGreen = Color(0xFF00E676)
+val CyberBlue = Color(0xFF00F2FF)
+val NeonPink = Color(0xFFFF00E5)
+val SoftGlass = Color(0x33FFFFFF)
+val WarningRed = Color(0xFFFF3D00)
 
-enum class GameState { START, PLAYING, OVER }
+enum class GameState { START, DIFFICULTY_SELECT, PLAYING, OVER }
+enum class Difficulty(val time: Long, val label: String) {
+    EASY(30000L, "EASY"),
+    MEDIUM(20000L, "MEDIUM"),
+    HARD(10000L, "HARD")
+}
 
 class MainActivity : ComponentActivity() {
     private val client = OkHttpClient()
@@ -52,42 +58,32 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     fun BrainanaGame(context: Context) {
-        val prefs = remember { context.getSharedPreferences("brainana_v3", Context.MODE_PRIVATE) }
+        val prefs = remember { context.getSharedPreferences("brainana_v4", Context.MODE_PRIVATE) }
+        val scope = rememberCoroutineScope()
 
-        // --- PERSISTENT DATA ---
+        // --- STATES ---
         var userName by remember { mutableStateOf(prefs.getString("name", "") ?: "") }
         var highScore by remember { mutableStateOf(prefs.getInt("high_score", 0)) }
-
-        // --- GAME STATES ---
         var gameState by remember { mutableStateOf(GameState.START) }
+        var difficulty by remember { mutableStateOf(Difficulty.MEDIUM) }
+
+        var isPaused by remember { mutableStateOf(false) }
+        var is3DMode by remember { mutableStateOf(false) }
         var score by remember { mutableStateOf(0) }
         var isOnline by remember { mutableStateOf(true) }
 
-        // Puzzle States
+        // Puzzle Logic
         var imageUrl by remember { mutableStateOf("") }
         var solution by remember { mutableStateOf(-1) }
         var input by remember { mutableStateOf("") }
         var timeLeft by remember { mutableStateOf(1f) }
         var isLoading by remember { mutableStateOf(false) }
         var floatingMsg by remember { mutableStateOf("") }
-        var isNewRecord by remember { mutableStateOf(false) }
-
-        val scope = rememberCoroutineScope()
         val shakeAnim = remember { Animatable(0f) }
 
-        // --- NETWORK MONITOR ---
-        DisposableEffect(Unit) {
-            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val callback = object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(n: Network) { isOnline = true }
-                override fun onLost(n: Network) { isOnline = false }
-            }
-            cm.registerDefaultNetworkCallback(callback)
-            onDispose { cm.unregisterNetworkCallback(callback) }
-        }
-
+        // --- HELPERS ---
         fun fetchNext() {
-            if (!isOnline || isLoading) return
+            if (isLoading) return
             isLoading = true
             val request = Request.Builder().url("https://marcconrad.com/uob/banana/api.php").build()
             client.newCall(request).enqueue(object : Callback {
@@ -106,187 +102,179 @@ class MainActivity : ComponentActivity() {
             })
         }
 
-        // --- TIMER LOGIC (20 SECONDS) ---
-        LaunchedEffect(gameState, imageUrl, isOnline) {
-            if (gameState == GameState.PLAYING && isOnline && imageUrl.isNotEmpty()) {
-                timeLeft = 1f
-                val totalTime = 20000L // 20s
-                val step = 100L
-                while (timeLeft > 0 && isOnline) {
+        // --- TIMER ---
+        LaunchedEffect(gameState, imageUrl, isPaused) {
+            if (gameState == GameState.PLAYING && !isPaused && imageUrl.isNotEmpty()) {
+                val totalTime = difficulty.time
+                val step = 50L
+                while (timeLeft > 0 && !isPaused) {
                     delay(step)
                     timeLeft -= step.toFloat() / totalTime
                 }
-                if (timeLeft <= 0 && isOnline) {
+                if (timeLeft <= 0) {
                     score = (score - 5).coerceAtLeast(0)
                     floatingMsg = "⏰ TIME OUT! -5"
-                    delay(1000)
+                    delay(800)
                     fetchNext()
+                    timeLeft = 1f
                 }
             }
         }
 
         Box(modifier = Modifier.fillMaxSize().background(MidnightBlue)) {
-            BackgroundDecor()
+            AnimatedBackground()
 
             when (gameState) {
-                GameState.START -> StartView(userName, highScore,
-                    onStart = {
-                        score = 0
-                        isNewRecord = false
-                        gameState = GameState.PLAYING
-                        fetchNext()
-                    },
-                    onNameSave = { name ->
-                        userName = name
-                        prefs.edit().putString("name", name).apply()
-                    }
-                )
+                GameState.START -> StartView(userName) {
+                    userName = it
+                    prefs.edit().putString("name", it).apply()
+                    gameState = GameState.DIFFICULTY_SELECT
+                }
+
+                GameState.DIFFICULTY_SELECT -> DifficultyView { selected ->
+                    difficulty = selected
+                    score = 0
+                    gameState = GameState.PLAYING
+                    fetchNext()
+                }
 
                 GameState.PLAYING -> {
                     Column(
-                        modifier = Modifier.fillMaxSize().padding(20.dp),
+                        modifier = Modifier.fillMaxSize().padding(20.dp).blur(if (isPaused) 25.dp else 0.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        GameHUD(userName, score, highScore)
+                        GameHUD(userName, score, is3DMode, onToggle3D = { is3DMode = !is3DMode })
 
                         LinearProgressIndicator(
                             progress = { timeLeft },
-                            modifier = Modifier.fillMaxWidth().height(10.dp).clip(CircleShape),
-                            color = if (timeLeft < 0.3f) WarningRed else ElectricYellow,
+                            modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
+                            color = if (timeLeft < 0.3f) WarningRed else CyberBlue,
                             trackColor = SoftGlass
                         )
 
+                        // Puzzle Area
                         Box(
-                            modifier = Modifier.weight(1f).offset(x = shakeAnim.value.dp),
+                            modifier = Modifier.weight(1f)
+                                .graphicsLayer {
+                                    if (is3DMode) {
+                                        rotationX = 15f
+                                        cameraDistance = 12f
+                                    }
+                                }
+                                .offset(x = shakeAnim.value.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             PuzzleFrame(imageUrl, isLoading, floatingMsg)
                         }
 
-                        Text(input.ifEmpty { "🍌" }, fontSize = 56.sp, fontWeight = FontWeight.Black, color = ElectricYellow)
+                        // Input Display
+                        Text(input.ifEmpty { "❓" }, fontSize = 60.sp, fontWeight = FontWeight.Black, color = ElectricYellow)
 
                         NumberPad { num ->
-                            if (input.length < 2 && isOnline && !isLoading) {
+                            if (input.length < 2 && !isLoading && !isPaused) {
                                 input += num
                                 if (input.toInt() == solution) {
                                     score += 10
-                                    floatingMsg = "✨ GENIUS! +10"
-                                    scope.launch { delay(600); fetchNext() }
+                                    floatingMsg = "✨ BRAVO! +10"
+                                    scope.launch { delay(700); fetchNext(); timeLeft = 1f }
                                 } else if (input.length >= solution.toString().length) {
                                     score = (score - 5).coerceAtLeast(0)
-                                    floatingMsg = "❌ OOPS! -5"
+                                    floatingMsg = "❌ WRONG! -5"
                                     scope.launch {
-                                        repeat(3) {
-                                            shakeAnim.animateTo(15f, tween(40))
-                                            shakeAnim.animateTo(-15f, tween(40))
+                                        repeat(4) {
+                                            shakeAnim.animateTo(10f, tween(30))
+                                            shakeAnim.animateTo(-10f, tween(30))
                                         }
                                         shakeAnim.animateTo(0f)
-                                        delay(400); input = ""; floatingMsg = ""
+                                        input = ""
                                     }
                                 }
                             }
                         }
 
-                        TextButton(onClick = {
-                            if (score > highScore) {
-                                highScore = score
-                                isNewRecord = true
-                                prefs.edit().putInt("high_score", score).apply()
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                            IconButton(onClick = { isPaused = true }) {
+                                Icon(Icons.Rounded.Pause, "Pause", tint = Color.White, modifier = Modifier.size(32.dp))
                             }
-                            gameState = GameState.OVER
-                        }) {
-                            Text("FINISH GAME 🏳️", color = Color.White.copy(0.4f))
+                            TextButton(onClick = {
+                                if (score > highScore) {
+                                    highScore = score
+                                    prefs.edit().putInt("high_score", score).apply()
+                                }
+                                gameState = GameState.OVER
+                            }) {
+                                Text("QUIT", color = Color.White.copy(0.5f))
+                            }
                         }
+                    }
+
+                    if (isPaused) {
+                        PauseOverlay { isPaused = false }
                     }
                 }
 
-                GameState.OVER -> GameOverView(score, highScore, isNewRecord) { gameState = GameState.START }
-            }
-
-            if (!isOnline) NetworkErrorLayer()
-        }
-    }
-
-    // --- REUSABLE COMPONENTS ---
-
-    @Composable
-    fun BackgroundDecor() {
-        Box(Modifier.fillMaxSize()) {
-            val symbols = listOf("∑", "π", "∫", "√", "∞", "∆", "🍌", "÷", "×")
-            symbols.forEachIndexed { index, s ->
-                Text(
-                    text = s,
-                    color = Color.White.copy(0.04f),
-                    fontSize = (40 + (index * 15)).sp,
-                    modifier = Modifier
-                        .offset(x = (index * 40).dp, y = (index * 100).dp)
-                        .rotate(index * 30f)
-                )
+                GameState.OVER -> GameOverView(score, highScore) { gameState = GameState.START }
             }
         }
     }
 
     @Composable
-    fun StartView(name: String, high: Int, onStart: () -> Unit, onNameSave: (String) -> Unit) {
-        var textInput by remember { mutableStateOf("") }
+    fun PauseOverlay(onResume: () -> Unit) {
+        Box(
+            modifier = Modifier.fillMaxSize().background(Color.Black.copy(0.7f)).clickable {  },
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("GAME PAUSED", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Spacer(Modifier.height(24.dp))
+                Button(
+                    onClick = onResume,
+                    colors = ButtonDefaults.buttonColors(ElectricYellow),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Rounded.PlayArrow, null, tint = MidnightBlue)
+                    Text(" RESUME", color = MidnightBlue, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+
+    @Composable
+    fun DifficultyView(onSelected: (Difficulty) -> Unit) {
         Column(
-            modifier = Modifier.fillMaxSize().padding(32.dp),
+            Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text("BRAINANA", fontSize = 52.sp, fontWeight = FontWeight.ExtraBold, color = ElectricYellow)
-            Text("MATH MONKEY CHALLENGE", color = CyberBlue, letterSpacing = 2.sp)
-
-            Spacer(Modifier.height(48.dp))
-
-            if (name.isEmpty()) {
-                OutlinedTextField(
-                    value = textInput, onValueChange = { textInput = it },
-                    label = { Text("Enter Your Name") },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        focusedBorderColor = ElectricYellow
-                    )
-                )
+            Text("SELECT CHALLENGE", color = CyberBlue, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(32.dp))
+            Difficulty.values().forEach { level ->
                 Button(
-                    onClick = { if (textInput.isNotBlank()) onNameSave(textInput) },
-                    modifier = Modifier.padding(top = 16.dp),
-                    colors = ButtonDefaults.buttonColors(ElectricYellow)
+                    onClick = { onSelected(level) },
+                    modifier = Modifier.fillMaxWidth(0.7f).padding(8.dp).height(60.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = SoftGlass),
+                    border = BorderStroke(1.dp, CyberBlue)
                 ) {
-                    Text("SAVE & PLAY", color = MidnightBlue, fontWeight = FontWeight.Bold)
+                    Text(level.label, color = Color.White, fontSize = 18.sp)
                 }
-            } else {
-                Text("Ready, $name?", color = Color.White, fontSize = 22.sp)
-                Spacer(Modifier.height(24.dp))
-                Button(
-                    onClick = onStart,
-                    modifier = Modifier.size(120.dp),
-                    shape = CircleShape,
-                    colors = ButtonDefaults.buttonColors(ElectricYellow)
-                ) {
-                    Icon(Icons.Rounded.PlayArrow, null, Modifier.size(64.dp), tint = MidnightBlue)
-                }
-                Spacer(Modifier.height(32.dp))
-                Text("PERSONAL BEST: $high", color = CyberBlue, fontWeight = FontWeight.Bold)
             }
         }
     }
 
     @Composable
-    fun GameHUD(name: String, score: Int, high: Int) {
+    fun GameHUD(name: String, score: Int, is3D: Boolean, onToggle3D: () -> Unit) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column {
-                Text(name.uppercase(), color = CyberBlue, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                Text("🎯 $score", color = ElectricYellow, fontSize = 32.sp, fontWeight = FontWeight.Black)
+                Text(name, color = CyberBlue, fontWeight = FontWeight.Bold)
+                Text("SCORE: $score", color = ElectricYellow, fontSize = 24.sp, fontWeight = FontWeight.Black)
             }
-            Surface(color = SoftGlass, shape = RoundedCornerShape(12.dp)) {
-                Text("🏆 BEST: $high", Modifier.padding(horizontal = 12.dp, vertical = 6.dp), color = Color.White, fontSize = 14.sp)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("3D", color = Color.White, fontSize = 12.sp)
+                Switch(checked = is3D, onCheckedChange = { onToggle3D() })
             }
         }
     }
@@ -294,10 +282,11 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun PuzzleFrame(url: String, loading: Boolean, msg: String) {
         Box(contentAlignment = Alignment.Center) {
-            Card(
-                modifier = Modifier.fillMaxWidth().aspectRatio(1.2f).border(2.dp, SoftGlass, RoundedCornerShape(24.dp)),
+            Surface(
+                modifier = Modifier.fillMaxWidth().aspectRatio(1.2f),
                 shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White)
+                color = Color.White,
+                shadowElevation = 20.dp
             ) {
                 if (loading) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -308,13 +297,9 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            AnimatedVisibility(visible = msg.isNotEmpty(), enter = scaleIn(), exit = fadeOut()) {
-                Surface(
-                    color = MidnightBlue.copy(0.9f),
-                    shape = RoundedCornerShape(16.dp),
-                    border = BorderStroke(2.dp, ElectricYellow)
-                ) {
-                    Text(msg, Modifier.padding(20.dp), color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 24.sp)
+            AnimatedVisibility(visible = msg.isNotEmpty(), enter = fadeIn() + scaleIn(), exit = fadeOut()) {
+                Box(Modifier.background(MidnightBlue.copy(0.8f), RoundedCornerShape(12.dp)).padding(16.dp)) {
+                    Text(msg, color = Color.White, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -323,21 +308,18 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun NumberPad(onPress: (String) -> Unit) {
         val keys = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")
-        Column(modifier = Modifier.padding(top = 16.dp)) {
+        Column {
             keys.chunked(5).forEach { row ->
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.padding(vertical = 6.dp)
-                ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(4.dp)) {
                     row.forEach { num ->
                         Surface(
-                            modifier = Modifier.size(62.dp).clickable { onPress(num) },
-                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.size(60.dp).clickable { onPress(num) },
+                            shape = RoundedCornerShape(12.dp),
                             color = SoftGlass,
-                            border = BorderStroke(1.dp, Color.White.copy(0.1f))
+                            border = BorderStroke(1.dp, Color.White.copy(0.2f))
                         ) {
                             Box(contentAlignment = Alignment.Center) {
-                                Text(num, color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                                Text(num, color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -347,37 +329,47 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    fun GameOverView(score: Int, high: Int, isNew: Boolean, onRetry: () -> Unit) {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(32.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(if(isNew) "👑 NEW RECORD! 👑" else "GAME OVER", fontSize = 28.sp, color = if(isNew) SuccessGreen else Color.White)
-            Text("$score", fontSize = 110.sp, fontWeight = FontWeight.Black, color = ElectricYellow)
-            Text("BEST SCORE: $high", color = CyberBlue)
-            Spacer(Modifier.height(48.dp))
+    fun StartView(currentName: String, onProceed: (String) -> Unit) {
+        var nameInput by remember { mutableStateOf(currentName) }
+        Column(Modifier.fillMaxSize(), Arrangement.Center, Alignment.CenterHorizontally) {
+            Text("BRAINANA", fontSize = 56.sp, fontWeight = FontWeight.Black, color = ElectricYellow)
+            Spacer(Modifier.height(40.dp))
+            OutlinedTextField(
+                value = nameInput,
+                onValueChange = { nameInput = it },
+                label = { Text("Agent Name") },
+                colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+            )
+            Spacer(Modifier.height(20.dp))
             Button(
-                onClick = onRetry,
-                modifier = Modifier.fillMaxWidth().height(60.dp),
+                onClick = { if(nameInput.isNotBlank()) onProceed(nameInput) },
                 colors = ButtonDefaults.buttonColors(ElectricYellow)
             ) {
-                Text("PLAY AGAIN", color = MidnightBlue, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Text("ENTER SYSTEM", color = MidnightBlue, fontWeight = FontWeight.Bold)
             }
         }
     }
 
     @Composable
-    fun NetworkErrorLayer() {
-        Box(
-            modifier = Modifier.fillMaxSize().background(MidnightBlue.copy(0.95f)).clickable(enabled = false) {},
-            contentAlignment = Alignment.Center
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.Rounded.WifiOff, null, Modifier.size(80.dp), tint = WarningRed)
-                Text("CONNECTION LOST", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                Text("Waiting for signal... 📡", color = Color.Gray)
+    fun GameOverView(score: Int, high: Int, onRetry: () -> Unit) {
+        Column(Modifier.fillMaxSize(), Arrangement.Center, Alignment.CenterHorizontally) {
+            Text("MISSION OVER", color = WarningRed, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+            Text("$score", fontSize = 100.sp, color = Color.White, fontWeight = FontWeight.Black)
+            Text("BEST: $high", color = CyberBlue)
+            Spacer(Modifier.height(50.dp))
+            Button(onClick = onRetry, colors = ButtonDefaults.buttonColors(ElectricYellow)) {
+                Text("REBOOT", color = MidnightBlue)
             }
         }
+    }
+
+    @Composable
+    fun AnimatedBackground() {
+        val infiniteTransition = rememberInfiniteTransition()
+        val angle by infiniteTransition.animateFloat(0f, 360f, infiniteRepeatable(tween(20000, easing = LinearEasing)))
+
+        Box(Modifier.fillMaxSize().rotate(angle).background(
+            Brush.radialGradient(listOf(Color(0xFF0F172A), MidnightBlue))
+        ))
     }
 }
