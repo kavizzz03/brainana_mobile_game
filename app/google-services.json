@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "113242005751",
+    "project_id": "brainana-d1211",
+    "storage_bucket": "brainana-d1211.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:113242005751:android:2675185d8fe927d6e533f2",
+        "android_client_info": {
+          "package_name": "com.example.brainana"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDRSmZs1urdUkyVb3D9arka7y55xrLGB2s"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
