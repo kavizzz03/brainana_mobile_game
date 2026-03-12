@@ -39,6 +39,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.AndroidViewModel
@@ -57,29 +58,60 @@ import okhttp3.*
 import org.json.JSONObject
 import java.io.IOException
 
-// --- 🎨 ENHANCED CYBER PALETTE ---
-val DarkObsidian = Color(0xFF020204)
-val CyberBlue = Color(0xFF00D1FF)
-val ElectricViolet = Color(0xFF8B5CF6)
-val NeonGold = Color(0xFFFFD700)
-val VividRose = Color(0xFFFF2E63)
+// --- 🎨 BASE COLORS & THEMES ---
 val GlassSurface = Color(0x1AFFFFFF)
 val GlassBorder = Color(0x33FFFFFF)
+val NeonGold = Color(0xFFFFD700)
+val VividRose = Color(0xFFFF2E63)
 
-enum class Screen { WELCOME, HOME, MODES, PLAYING, LEADERBOARD, PROFILE, AVATAR_SELECT }
-enum class Mode(val time: Long, val bonus: Int, val desc: String, val color: Color) {
-    EASY(20000L, 1, "Standard Neural Sync", Color(0xFF4ADE80)),
-    MEDIUM(12000L, 2, "Accelerated Processing", NeonGold),
-    HARD(7000L, 4, "Overclocked Protocol", VividRose)
+enum class GameTheme(val label: String, val apiPath: String, val primary: Color, val secondary: Color, val bg: Color, val icon: ImageVector) {
+    NEURAL("NEURAL", "banana", Color(0xFF00D1FF), Color(0xFF8B5CF6), Color(0xFF020204), Icons.Rounded.Psychology),
+    HEROES("HEROES", "tomato", Color(0xFFE23636), Color(0xFF1877F2), Color(0xFF0A0E17), Icons.Rounded.Bolt),
+    PRINCESS("PRINCESS", "smile", Color(0xFFFF69B4), Color(0xFFDDA0DD), Color(0xFF2A0826), Icons.Rounded.AutoAwesome)
+}
+
+enum class Screen { WELCOME, THEME_PICKER, INSTRUCTIONS, HOME, MODES, PLAYING, LEADERBOARD, PROFILE, AVATAR_SELECT }
+
+enum class Mode(val time: Long, val bonus: Int, val desc: String) {
+    EASY(20000L, 1, "Standard Processing"),
+    MEDIUM(12000L, 2, "Accelerated Pace"),
+    HARD(7000L, 4, "Overclocked Protocol")
 }
 
 enum class Rank(val label: String, val minXp: Int, val color: Color, val icon: ImageVector) {
     BEGINNER("INITIATE", 0, Color(0xFF4ADE80), Icons.Rounded.RocketLaunch),
-    PRO("OPERATIVE", 2500, CyberBlue, Icons.Rounded.VerifiedUser),
-    LEGEND("ARCHITECT", 10000, ElectricViolet, Icons.Rounded.AllInclusive);
+    PRO("OPERATIVE", 2500, Color(0xFF00D1FF), Icons.Rounded.VerifiedUser),
+    LEGEND("ARCHITECT", 10000, Color(0xFF8B5CF6), Icons.Rounded.AllInclusive);
 
     companion object {
         fun fromXp(xp: Int) = entries.lastOrNull { xp >= it.minXp } ?: BEGINNER
+    }
+}
+
+// 🆕 LEVEL SYSTEM (Every 500 XP = 1 Level)
+enum class Level(val levelNum: Int, val minXp: Int, val color: Color) {
+    LVL_1(1, 0, Color(0xFF4ADE80)),
+    LVL_2(2, 500, Color(0xFF3B82F6)),
+    LVL_3(3, 1000, Color(0xFF8B5CF6)),
+    LVL_4(4, 1500, Color(0xFFEC4899)),
+    LVL_5(5, 2000, Color(0xFFFFD700)),
+    LVL_6(6, 2500, Color(0xFF00D1FF)),
+    LVL_7(7, 3000, Color(0xFFF97316)),
+    LVL_8(8, 3500, Color(0xFF06B6D4)),
+    LVL_9(9, 4000, Color(0xFF10B981)),
+    LVL_10(10, 4500, Color(0xFFEF4444));
+
+    companion object {
+        fun fromXp(xp: Int) = entries.lastOrNull { xp >= it.minXp } ?: LVL_1
+        fun getNextLevel(currentLevel: Level): Level? {
+            val nextIndex = entries.indexOf(currentLevel) + 1
+            return if (nextIndex < entries.size) entries[nextIndex] else null
+        }
+        fun xpToNextLevel(xp: Int): Int {
+            val currentLevel = fromXp(xp)
+            val nextLevel = getNextLevel(currentLevel)
+            return nextLevel?.minXp?.minus(xp) ?: 0
+        }
     }
 }
 
@@ -90,28 +122,39 @@ data class Player(
     val totalEarnings: Int = 0,
     val photoUrl: String = "",
     val avatarStyle: String = "bottts",
-    val isGuest: Boolean = true
+    val isGuest: Boolean = true,
+    val level: Int = 1
 )
+
+// 🆕 LEVEL UP EVENT
+data class LevelUpEvent(val previousLevel: Level, val newLevel: Level)
 
 // --- 🧠 CORE ENGINE ---
 class GameViewModel(application: Application) : AndroidViewModel(application) {
     private val client = OkHttpClient()
     private val auth = FirebaseAuth.getInstance()
     private val db = FirebaseFirestore.getInstance()
-    private val prefs = application.getSharedPreferences("brain_v3_prefs", Context.MODE_PRIVATE)
+    private val prefs = application.getSharedPreferences("brain_v4_prefs", Context.MODE_PRIVATE)
 
     var currentScreen by mutableStateOf(Screen.WELCOME)
     var backStack = mutableStateListOf(Screen.WELCOME)
     var player by mutableStateOf(Player())
+
     var currentScore by mutableStateOf(0)
     var selectedMode by mutableStateOf(Mode.MEDIUM)
+    var selectedTheme by mutableStateOf(GameTheme.NEURAL)
+
     var isPaused by mutableStateOf(false)
     var isLoading by mutableStateOf(false)
     var puzzleUrl by mutableStateOf("")
     var solution by mutableStateOf(-1)
+
     var isOnline by mutableStateOf(true)
     var leaderboard = mutableStateListOf<Player>()
     var newRankReached by mutableStateOf<Rank?>(null)
+    var levelUpEvent by mutableStateOf<LevelUpEvent?>(null) // 🆕 Level up notification
+
+    var isFirstLaunch by mutableStateOf(prefs.getBoolean("is_first_launch", true))
 
     init {
         loadLocalData()
@@ -139,14 +182,29 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun completeFirstLaunch() {
+        isFirstLaunch = false
+        prefs.edit().putBoolean("is_first_launch", false).apply()
+        navigateTo(Screen.HOME)
+    }
+
     private fun loadLocalData() {
+        val level = Level.fromXp(prefs.getInt("xp", 0)).levelNum
         player = Player(
             name = prefs.getString("name", "Agent Guest") ?: "Agent Guest",
             highScore = prefs.getInt("high", 0),
             totalEarnings = prefs.getInt("xp", 0),
             avatarStyle = prefs.getString("style", "bottts") ?: "bottts",
-            isGuest = true
+            isGuest = true,
+            level = level
         )
+        val savedThemeName = prefs.getString("theme", GameTheme.NEURAL.name) ?: GameTheme.NEURAL.name
+        selectedTheme = GameTheme.valueOf(savedThemeName)
+    }
+
+    fun updateTheme(theme: GameTheme) {
+        selectedTheme = theme
+        prefs.edit().putString("theme", theme.name).apply()
     }
 
     fun updateAvatar(style: String) {
@@ -171,12 +229,17 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             player = if (doc.exists()) {
                 doc.toObject(Player::class.java)!!.copy(isGuest = false)
             } else {
-                val p = Player(uid, name, 0, player.totalEarnings, photo, player.avatarStyle, false)
+                val level = Level.fromXp(player.totalEarnings).levelNum
+                val p = Player(uid, name, 0, player.totalEarnings, photo, player.avatarStyle, false, level)
                 db.collection("players").document(uid).set(p)
                 p
             }
-            navigateTo(Screen.HOME)
+            if (isFirstLaunch) navigateTo(Screen.THEME_PICKER) else navigateTo(Screen.HOME)
         }
+    }
+
+    fun proceedFromWelcome() {
+        if (isFirstLaunch) navigateTo(Screen.THEME_PICKER) else navigateTo(Screen.HOME)
     }
 
     fun submitAnswer(input: String, timeout: Boolean = false) {
@@ -185,19 +248,35 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         val diff = if (correct) (10 * selectedMode.bonus) else -5
 
         val prevRank = Rank.fromXp(player.totalEarnings)
+        val prevLevel = Level.fromXp(player.totalEarnings)
+
         currentScore = (currentScore + diff).coerceAtLeast(0)
         val newXp = (player.totalEarnings + diff).coerceAtLeast(0)
-        val nextRank = Rank.fromXp(newXp)
 
+        val nextRank = Rank.fromXp(newXp)
+        val nextLevel = Level.fromXp(newXp)
+
+        // 🆕 Check for Rank Up
         if (nextRank.minXp > prevRank.minXp) newRankReached = nextRank
 
+        // 🆕 Check for Level Up
+        if (nextLevel.levelNum > prevLevel.levelNum) {
+            levelUpEvent = LevelUpEvent(prevLevel, nextLevel)
+        }
+
+        val newLevelNum = nextLevel.levelNum
         player = player.copy(
             totalEarnings = newXp,
-            highScore = if (currentScore > player.highScore) currentScore else player.highScore
+            highScore = if (currentScore > player.highScore) currentScore else player.highScore,
+            level = newLevelNum
         )
 
         if (player.isGuest) {
-            prefs.edit().putInt("high", player.highScore).putInt("xp", player.totalEarnings).apply()
+            prefs.edit()
+                .putInt("high", player.highScore)
+                .putInt("xp", player.totalEarnings)
+                .putInt("level", newLevelNum)
+                .apply()
         } else {
             db.collection("players").document(player.uid).set(player)
         }
@@ -207,7 +286,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
     fun fetchNewPuzzle() {
         isLoading = true
-        val request = Request.Builder().url("https://marcconrad.com/uob/banana/api.php").build()
+        val request = Request.Builder().url("https://marcconrad.com/uob/${selectedTheme.apiPath}/api.php?out=json").build()
         client.newCall(request).enqueue(object : Callback {
             override fun onResponse(call: Call, response: Response) {
                 val json = JSONObject(response.body?.string() ?: "{}")
@@ -231,15 +310,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         auth.signOut()
         val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).build()
         GoogleSignIn.getClient(context, gso).signOut()
-
-        player = Player(
-            name = prefs.getString("name", "Agent Guest") ?: "Agent Guest",
-            highScore = prefs.getInt("high", 0),
-            totalEarnings = prefs.getInt("xp", 0),
-            avatarStyle = prefs.getString("style", "bottts") ?: "bottts",
-            isGuest = true
-        )
-
+        loadLocalData()
         backStack.clear()
         backStack.add(Screen.WELCOME)
         currentScreen = Screen.WELCOME
@@ -267,11 +338,13 @@ class MainActivity : ComponentActivity() {
                 onDispose { callback.remove() }
             }
 
-            Surface(modifier = Modifier.fillMaxSize(), color = DarkObsidian) {
+            Surface(modifier = Modifier.fillMaxSize(), color = vm.selectedTheme.bg) {
                 Box {
-                    MeshGradientBackground()
+                    MeshGradientBackground(vm.selectedTheme)
                     Column {
-                        if (vm.currentScreen != Screen.WELCOME) TopHUD(vm.player)
+                        if (vm.currentScreen != Screen.WELCOME && vm.currentScreen != Screen.THEME_PICKER && vm.currentScreen != Screen.INSTRUCTIONS) {
+                            TopHUD(vm.player, vm.selectedTheme)
+                        }
                         AnimatedContent(
                             targetState = vm.currentScreen,
                             transitionSpec = { slideInHorizontally { it } + fadeIn() togetherWith slideOutHorizontally { -it } + fadeOut() },
@@ -279,6 +352,8 @@ class MainActivity : ComponentActivity() {
                         ) { screen ->
                             when (screen) {
                                 Screen.WELCOME -> WelcomeLayout(vm)
+                                Screen.THEME_PICKER -> ThemePickerLayout(vm)
+                                Screen.INSTRUCTIONS -> InstructionsLayout(vm)
                                 Screen.HOME -> DashboardLayout(vm)
                                 Screen.MODES -> ModeLayout(vm)
                                 Screen.PLAYING -> ArenaLayout(vm)
@@ -288,8 +363,9 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
-                    if (!vm.isOnline) ConnectionOverlay { vm.checkNetwork(this@MainActivity) }
+                    if (!vm.isOnline) ConnectionOverlay(vm.selectedTheme) { vm.checkNetwork(this@MainActivity) }
                     vm.newRankReached?.let { RankUpOverlay(it) { vm.newRankReached = null } }
+                    vm.levelUpEvent?.let { LevelUpOverlay(it) { vm.levelUpEvent = null } } // 🆕 Level Up Overlay
                 }
             }
         }
@@ -297,18 +373,20 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun MeshGradientBackground() {
+fun MeshGradientBackground(theme: GameTheme) {
     val infiniteTransition = rememberInfiniteTransition(label = "mesh")
     val offset1 by infiniteTransition.animateFloat(0f, 1500f, infiniteRepeatable(tween(15000, easing = LinearEasing), RepeatMode.Reverse), label = "x")
     Canvas(modifier = Modifier.fillMaxSize()) {
-        drawRect(brush = Brush.radialGradient(colors = listOf(ElectricViolet.copy(0.12f), Color.Transparent), center = Offset(offset1, 300f), radius = 1000f))
-        drawRect(brush = Brush.radialGradient(colors = listOf(CyberBlue.copy(0.1f), Color.Transparent), center = Offset(size.width - offset1, size.height - 300f), radius = 1200f))
+        drawRect(brush = Brush.radialGradient(colors = listOf(theme.secondary.copy(0.12f), Color.Transparent), center = Offset(offset1, 300f), radius = 1000f))
+        drawRect(brush = Brush.radialGradient(colors = listOf(theme.primary.copy(0.1f), Color.Transparent), center = Offset(size.width - offset1, size.height - 300f), radius = 1200f))
     }
 }
 
 @Composable
-fun TopHUD(player: Player) {
+fun TopHUD(player: Player, theme: GameTheme) {
     val rank = Rank.fromXp(player.totalEarnings)
+    val level = Level.fromXp(player.totalEarnings)
+    val xpToNextLevel = Level.xpToNextLevel(player.totalEarnings)
     val avatarUrl = "https://api.dicebear.com/9.x/${player.avatarStyle}/png?seed=${player.name}&size=128"
 
     Box(modifier = Modifier.statusBarsPadding().padding(16.dp)) {
@@ -319,16 +397,30 @@ fun TopHUD(player: Player) {
             AsyncImage(
                 model = avatarUrl,
                 contentDescription = null,
-                modifier = Modifier.size(42.dp).clip(CircleShape).background(DarkObsidian).border(1.5.dp, rank.color, CircleShape)
+                modifier = Modifier.size(42.dp).clip(CircleShape).background(theme.bg).border(1.5.dp, theme.primary, CircleShape)
             )
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(player.name.uppercase(), color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp, letterSpacing = 1.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(player.name.uppercase(), color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp, letterSpacing = 1.sp)
+                    Spacer(Modifier.width(8.dp))
+                    // 🆕 Level Badge
+                    Surface(
+                        shape = CircleShape,
+                        color = level.color.copy(0.3f),
+                        modifier = Modifier.size(24.dp),
+                        border = BorderStroke(1.dp, level.color)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text("${level.levelNum}", color = level.color, fontWeight = FontWeight.ExtraBold, fontSize = 8.sp)
+                        }
+                    }
+                }
                 Spacer(Modifier.height(4.dp))
                 LinearProgressIndicator(
-                    progress = { (player.totalEarnings % 2500) / 2500f },
+                    progress = { (player.totalEarnings % 500) / 500f },
                     modifier = Modifier.fillMaxWidth(0.7f).height(4.dp).clip(CircleShape),
-                    color = rank.color,
+                    color = level.color,
                     trackColor = Color.White.copy(0.05f)
                 )
             }
@@ -346,17 +438,80 @@ fun WelcomeLayout(vm: GameViewModel) {
     }
     Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Box(contentAlignment = Alignment.Center) {
-            Surface(Modifier.size(160.dp).blur(50.dp), color = CyberBlue.copy(0.2f), shape = CircleShape) {}
+            Surface(Modifier.size(160.dp).blur(50.dp), color = vm.selectedTheme.primary.copy(0.2f), shape = CircleShape) {}
             Icon(Icons.Rounded.Psychology, null, Modifier.size(110.dp), tint = Color.White)
         }
         Text("BRAINANA", fontSize = 52.sp, fontWeight = FontWeight.Black, color = Color.White, letterSpacing = 6.sp)
-        Text("NEURAL INTERFACE", color = CyberBlue, fontSize = 12.sp, letterSpacing = 3.sp)
+        Text("COGNITIVE TRAINING", color = vm.selectedTheme.primary, fontSize = 12.sp, letterSpacing = 3.sp)
         Spacer(Modifier.height(80.dp))
-        GlassButton("SYNCHRONIZE GOOGLE", Icons.Rounded.Security, CyberBlue) {
-            val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).requestIdToken("113242005751-t33f11sucdci7h8egvb8lhi31s73tfp0.apps.googleusercontent.com").requestEmail().build()
+        GlassButton("SYNCHRONIZE GOOGLE", Icons.Rounded.Security, vm.selectedTheme.primary, vm.selectedTheme.bg) {
+            val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+                .requestIdToken("113242005751-t33f11sucdci7h8egvb8lhi31s73tfp0.apps.googleusercontent.com").requestEmail().build()
             launcher.launch(GoogleSignIn.getClient(context, gso).signInIntent)
         }
-        TextButton(onClick = { vm.navigateTo(Screen.HOME) }) { Text("ENTER AS GUEST", color = Color.White.copy(0.3f), fontSize = 11.sp) }
+        TextButton(onClick = { vm.proceedFromWelcome() }) { Text("ENTER AS GUEST", color = Color.White.copy(0.4f), fontSize = 11.sp) }
+    }
+}
+
+@Composable
+fun ThemePickerLayout(vm: GameViewModel) {
+    Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Text("CHOOSE YOUR VIBE", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Black)
+        Text("This sets your interface and puzzles.", color = Color.White.copy(0.5f), modifier = Modifier.padding(bottom = 32.dp))
+
+        GameTheme.entries.forEach { theme ->
+            val isSelected = vm.selectedTheme == theme
+            Surface(
+                onClick = { vm.updateTheme(theme) },
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                color = if (isSelected) theme.primary.copy(0.2f) else GlassSurface,
+                shape = RoundedCornerShape(20.dp),
+                border = BorderStroke(2.dp, if (isSelected) theme.primary else GlassBorder)
+            ) {
+                Row(Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(theme.icon, null, tint = theme.primary, modifier = Modifier.size(32.dp))
+                    Spacer(Modifier.width(16.dp))
+                    Text(theme.label, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.weight(1f))
+                    if (isSelected) Icon(Icons.Rounded.CheckCircle, null, tint = theme.primary)
+                }
+            }
+        }
+
+        Spacer(Modifier.height(32.dp))
+        GlassButton(if (vm.isFirstLaunch) "CONTINUE" else "SAVE", Icons.Rounded.ArrowForward, vm.selectedTheme.primary, vm.selectedTheme.bg) {
+            if (vm.isFirstLaunch) vm.navigateTo(Screen.INSTRUCTIONS) else vm.goBack()
+        }
+    }
+}
+
+@Composable
+fun InstructionsLayout(vm: GameViewModel) {
+    Column(Modifier.fillMaxSize().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Icon(Icons.Rounded.MenuBook, null, Modifier.size(80.dp), tint = vm.selectedTheme.primary)
+        Spacer(Modifier.height(24.dp))
+        Text("HOW TO PLAY", color = Color.White, fontSize = 32.sp, fontWeight = FontWeight.Black)
+        Spacer(Modifier.height(32.dp))
+
+        InstructionStep("1", "Observe the puzzle image on the screen carefully.", vm.selectedTheme.primary)
+        InstructionStep("2", "Identify the mathematical pattern or logic sequence.", vm.selectedTheme.primary)
+        InstructionStep("3", "Use the tactical keypad to enter the final missing number.", vm.selectedTheme.primary)
+        InstructionStep("4", "Solve it before the timer runs out to gain XP and Level UP!", vm.selectedTheme.primary)
+
+        Spacer(Modifier.height(40.dp))
+        GlassButton("I'M READY", Icons.Rounded.PlayArrow, vm.selectedTheme.primary, vm.selectedTheme.bg) {
+            vm.completeFirstLaunch()
+        }
+    }
+}
+
+@Composable
+fun InstructionStep(number: String, text: String, color: Color) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Surface(Modifier.size(40.dp), shape = CircleShape, color = color.copy(0.2f), border = BorderStroke(1.dp, color)) {
+            Box(contentAlignment = Alignment.Center) { Text(number, color = color, fontWeight = FontWeight.Bold, fontSize = 18.sp) }
+        }
+        Spacer(Modifier.width(16.dp))
+        Text(text, color = Color.White.copy(0.8f), fontSize = 14.sp)
     }
 }
 
@@ -364,6 +519,8 @@ fun WelcomeLayout(vm: GameViewModel) {
 fun DashboardLayout(vm: GameViewModel) {
     val infiniteTransition = rememberInfiniteTransition(label = "float")
     val floatAnim by infiniteTransition.animateFloat(0f, -15f, infiniteRepeatable(tween(2000, easing = EaseInOutSine), RepeatMode.Reverse), label = "y")
+    val currentLevel = Level.fromXp(vm.player.totalEarnings)
+    val xpToNextLevel = Level.xpToNextLevel(vm.player.totalEarnings)
 
     Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.SpaceEvenly) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.graphicsLayer { translationY = floatAnim }) {
@@ -371,11 +528,45 @@ fun DashboardLayout(vm: GameViewModel) {
             Text("${vm.player.highScore}", fontSize = 110.sp, fontWeight = FontWeight.Black, color = Color.White)
         }
 
+        // 🆕 LEVEL DISPLAY ON DASHBOARD
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .clip(RoundedCornerShape(24.dp))
+                .background(currentLevel.color.copy(0.1f))
+                .border(2.dp, currentLevel.color, RoundedCornerShape(24.dp))
+                .padding(20.dp)
+                .fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Rounded.TrendingUp, null, tint = currentLevel.color, modifier = Modifier.size(32.dp))
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text("CURRENT LEVEL", color = Color.White.copy(0.5f), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text("${currentLevel.levelNum}", color = currentLevel.color, fontSize = 36.sp, fontWeight = FontWeight.Black)
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            LinearProgressIndicator(
+                progress = { (vm.player.totalEarnings % 500) / 500f },
+                modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
+                color = currentLevel.color,
+                trackColor = Color.White.copy(0.1f)
+            )
+            Spacer(Modifier.height(8.dp))
+            Text("$xpToNextLevel XP to next level", color = Color.White.copy(0.4f), fontSize = 12.sp)
+        }
+
         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            GlassButton("LAUNCH ARENA", Icons.Rounded.Bolt, CyberBlue) { vm.navigateTo(Screen.MODES) }
+            GlassButton("LAUNCH ARENA", Icons.Rounded.Bolt, vm.selectedTheme.primary, vm.selectedTheme.bg) { vm.navigateTo(Screen.MODES) }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 SmallCircleButton(Icons.Rounded.EmojiEvents, NeonGold) { vm.getLeaderboard("highScore"); vm.navigateTo(Screen.LEADERBOARD) }
                 SmallCircleButton(Icons.Rounded.Face, Color.White) { vm.navigateTo(Screen.AVATAR_SELECT) }
+                SmallCircleButton(Icons.Rounded.Palette, vm.selectedTheme.primary) { vm.navigateTo(Screen.THEME_PICKER) }
                 SmallCircleButton(Icons.Rounded.Person, Color.White) { vm.navigateTo(Screen.PROFILE) }
             }
         }
@@ -392,7 +583,7 @@ fun AvatarSelectionLayout(vm: GameViewModel) {
             items(styles) { style ->
                 val isSelected = vm.player.avatarStyle == style
                 Box(
-                    modifier = Modifier.aspectRatio(1f).clip(RoundedCornerShape(24.dp)).background(if (isSelected) CyberBlue.copy(0.2f) else GlassSurface).border(2.dp, if (isSelected) CyberBlue else GlassBorder, RoundedCornerShape(24.dp)).clickable { vm.updateAvatar(style) },
+                    modifier = Modifier.aspectRatio(1f).clip(RoundedCornerShape(24.dp)).background(if (isSelected) vm.selectedTheme.primary.copy(0.2f) else GlassSurface).border(2.dp, if (isSelected) vm.selectedTheme.primary else GlassBorder, RoundedCornerShape(24.dp)).clickable { vm.updateAvatar(style) },
                     contentAlignment = Alignment.Center
                 ) {
                     AsyncImage(
@@ -403,7 +594,7 @@ fun AvatarSelectionLayout(vm: GameViewModel) {
                 }
             }
         }
-        GlassButton("CONFIRM", Icons.Rounded.Check, CyberBlue) { vm.goBack() }
+        GlassButton("CONFIRM", Icons.Rounded.Check, vm.selectedTheme.primary, vm.selectedTheme.bg) { vm.goBack() }
     }
 }
 
@@ -416,14 +607,14 @@ fun ModeLayout(vm: GameViewModel) {
             Surface(
                 onClick = { vm.selectedMode = mode; vm.currentScore = 0; vm.fetchNewPuzzle(); vm.navigateTo(Screen.PLAYING) },
                 modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                color = mode.color.copy(0.1f), shape = RoundedCornerShape(24.dp), border = BorderStroke(1.dp, mode.color.copy(0.4f))
+                color = vm.selectedTheme.primary.copy(0.1f), shape = RoundedCornerShape(24.dp), border = BorderStroke(1.dp, vm.selectedTheme.primary.copy(0.4f))
             ) {
                 Row(Modifier.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(mode.name, color = mode.color, fontWeight = FontWeight.Black, fontSize = 20.sp)
+                        Text(mode.name, color = vm.selectedTheme.primary, fontWeight = FontWeight.Black, fontSize = 20.sp)
                         Text(mode.desc, color = Color.White.copy(0.5f), fontSize = 12.sp)
                     }
-                    Text("${mode.bonus}X", color = mode.color, fontWeight = FontWeight.Black, fontSize = 18.sp)
+                    Text("${mode.bonus}X", color = vm.selectedTheme.primary, fontWeight = FontWeight.Black, fontSize = 18.sp)
                 }
             }
         }
@@ -444,32 +635,32 @@ fun ArenaLayout(vm: GameViewModel) {
         }
     }
     Column(Modifier.fillMaxSize().padding(24.dp)) {
-        LinearProgressIndicator(progress = { timerProgress }, modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape), color = if (timerProgress < 0.3f) VividRose else vm.selectedMode.color, trackColor = Color.White.copy(0.1f))
+        LinearProgressIndicator(progress = { timerProgress }, modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape), color = if (timerProgress < 0.3f) VividRose else vm.selectedTheme.primary, trackColor = Color.White.copy(0.1f))
 
         Row(Modifier.fillMaxWidth().padding(vertical = 24.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("YIELD: ${vm.currentScore} XP", color = CyberBlue, fontSize = 22.sp, fontWeight = FontWeight.Black)
+            Text("SCORE: ${vm.currentScore}", color = vm.selectedTheme.primary, fontSize = 22.sp, fontWeight = FontWeight.Black)
             IconButton(onClick = { vm.isPaused = true }, modifier = Modifier.background(GlassSurface, CircleShape)) { Icon(Icons.Rounded.Pause, null, tint = Color.White) }
         }
 
         Surface(modifier = Modifier.weight(1f).fillMaxWidth(), color = GlassSurface, shape = RoundedCornerShape(32.dp), border = BorderStroke(1.dp, GlassBorder)) {
             Box(contentAlignment = Alignment.Center) {
-                if (vm.isLoading) CircularProgressIndicator(color = CyberBlue)
+                if (vm.isLoading) CircularProgressIndicator(color = vm.selectedTheme.primary)
                 else AsyncImage(model = vm.puzzleUrl, contentDescription = null, modifier = Modifier.fillMaxSize().padding(24.dp))
             }
         }
 
         Spacer(Modifier.height(24.dp))
-        TacticalKeypad(vm.selectedMode.color) { vm.submitAnswer(it) }
+        TacticalKeypad(vm.selectedTheme.primary) { vm.submitAnswer(it) }
     }
 
     if (vm.isPaused) {
-        Box(Modifier.fillMaxSize().background(DarkObsidian.copy(0.95f)).clickable(enabled = false){}, contentAlignment = Alignment.Center) {
+        Box(Modifier.fillMaxSize().background(vm.selectedTheme.bg.copy(0.95f)).clickable(enabled = false){}, contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("PROCESS SUSPENDED", color = Color.White, fontWeight = FontWeight.Black, fontSize = 26.sp)
                 Spacer(Modifier.height(40.dp))
-                GlassButton("RESUME", Icons.Rounded.PlayArrow, CyberBlue) { vm.isPaused = false }
+                GlassButton("RESUME", Icons.Rounded.PlayArrow, vm.selectedTheme.primary, vm.selectedTheme.bg) { vm.isPaused = false }
                 Spacer(Modifier.height(12.dp))
-                GlassButton("ABORT", Icons.Rounded.Close, VividRose) { vm.isPaused = false; vm.navigateTo(Screen.HOME) }
+                GlassButton("ABORT", Icons.Rounded.Close, VividRose, vm.selectedTheme.bg) { vm.isPaused = false; vm.navigateTo(Screen.HOME) }
             }
         }
     }
@@ -494,20 +685,24 @@ fun RankingLayout(vm: GameViewModel) {
     var tab by remember { mutableIntStateOf(0) }
     Column(Modifier.fillMaxSize().padding(24.dp)) {
         Text("HALL OF FAME", color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Black)
-        TabRow(selectedTabIndex = tab, containerColor = Color.Transparent, contentColor = CyberBlue, divider = {}) {
+        TabRow(selectedTabIndex = tab, containerColor = Color.Transparent, contentColor = vm.selectedTheme.primary, divider = {}) {
             Tab(selected = tab == 0, onClick = { tab = 0; vm.getLeaderboard("highScore") }) { Text("SCORE", Modifier.padding(16.dp)) }
             Tab(selected = tab == 1, onClick = { tab = 1; vm.getLeaderboard("totalEarnings") }) { Text("XP", Modifier.padding(16.dp)) }
         }
         LazyColumn(Modifier.weight(1f).padding(top = 16.dp)) {
             itemsIndexed(vm.leaderboard) { i, p ->
+                val playerLevel = Level.fromXp(p.totalEarnings)
                 Row(Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(20.dp)).background(GlassSurface).border(1.dp, GlassBorder, RoundedCornerShape(20.dp)).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("#${i+1}", color = CyberBlue, fontWeight = FontWeight.Black, modifier = Modifier.width(40.dp))
-                    Text(p.name, color = Color.White, modifier = Modifier.weight(1f))
+                    Text("#${i+1}", color = vm.selectedTheme.primary, fontWeight = FontWeight.Black, modifier = Modifier.width(40.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(p.name, color = Color.White)
+                        Text("Lvl ${playerLevel.levelNum}", color = playerLevel.color, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
                     Text(if(tab==0) "${p.highScore}" else "${p.totalEarnings}", color = NeonGold, fontWeight = FontWeight.Bold)
                 }
             }
         }
-        GlassButton("BACK", Icons.Rounded.ArrowBack, Color.White.copy(0.1f)) { vm.goBack() }
+        GlassButton("BACK", Icons.Rounded.ArrowBack, Color.White.copy(0.1f), vm.selectedTheme.bg) { vm.goBack() }
     }
 }
 
@@ -515,26 +710,28 @@ fun RankingLayout(vm: GameViewModel) {
 fun ProfileLayout(vm: GameViewModel) {
     val context = LocalContext.current
     val rank = Rank.fromXp(vm.player.totalEarnings)
+    val level = Level.fromXp(vm.player.totalEarnings)
     val avatarUrl = "https://api.dicebear.com/9.x/${vm.player.avatarStyle}/png?seed=${vm.player.name}&size=256"
 
     Column(Modifier.fillMaxSize().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(contentAlignment = Alignment.BottomEnd) {
-            Surface(Modifier.size(140.dp).clip(CircleShape).border(3.dp, rank.color, CircleShape).background(GlassSurface)) {
+            Surface(Modifier.size(140.dp).clip(CircleShape).border(3.dp, vm.selectedTheme.primary, CircleShape).background(GlassSurface)) {
                 AsyncImage(model = avatarUrl, contentDescription = null, contentScale = ContentScale.Crop)
             }
-            Surface(Modifier.size(40.dp), color = rank.color, shape = CircleShape) {
-                Icon(rank.icon, null, Modifier.padding(8.dp), tint = DarkObsidian)
+            Surface(Modifier.size(40.dp), color = vm.selectedTheme.primary, shape = CircleShape) {
+                Icon(rank.icon, null, Modifier.padding(8.dp), tint = vm.selectedTheme.bg)
             }
         }
         Text(vm.player.name, color = Color.White, fontSize = 32.sp, fontWeight = FontWeight.Black, modifier = Modifier.padding(top = 24.dp))
-        Text(rank.label, color = rank.color, fontWeight = FontWeight.ExtraBold, letterSpacing = 6.sp)
+        Text(rank.label, color = vm.selectedTheme.primary, fontWeight = FontWeight.ExtraBold, letterSpacing = 6.sp)
 
         Spacer(Modifier.height(50.dp))
         StatRow("TOTAL XP", "${vm.player.totalEarnings} XP")
+        StatRow("LEVEL", "LEVEL ${level.levelNum}")
         StatRow("CLEARANCE", if(vm.player.isGuest) "GUEST" else "VERIFIED")
 
         Spacer(Modifier.weight(1f))
-        GlassButton("DISCONNECT", Icons.Rounded.Logout, VividRose) { vm.signOut(context) }
+        GlassButton("DISCONNECT", Icons.Rounded.Logout, VividRose, vm.selectedTheme.bg) { vm.signOut(context) }
     }
 }
 
@@ -548,16 +745,16 @@ fun StatRow(label: String, value: String) {
 }
 
 @Composable
-fun GlassButton(text: String, icon: ImageVector, color: Color, onClick: () -> Unit) {
+fun GlassButton(text: String, icon: ImageVector, color: Color, textColor: Color, onClick: () -> Unit) {
     Button(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth().height(60.dp),
         colors = ButtonDefaults.buttonColors(containerColor = color),
         shape = RoundedCornerShape(18.dp)
     ) {
-        Icon(icon, null, tint = DarkObsidian)
+        Icon(icon, null, tint = textColor)
         Spacer(Modifier.width(12.dp))
-        Text(text, color = DarkObsidian, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
+        Text(text, color = textColor, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
     }
 }
 
@@ -574,7 +771,7 @@ fun SmallCircleButton(icon: ImageVector, color: Color, onClick: () -> Unit) {
 
 @Composable
 fun RankUpOverlay(rank: Rank, onDismiss: () -> Unit) {
-    Box(Modifier.fillMaxSize().background(DarkObsidian.copy(0.95f)).clickable { onDismiss() }, Alignment.Center) {
+    Box(Modifier.fillMaxSize().background(Color.Black.copy(0.95f)).clickable { onDismiss() }, Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text("PROMOTION SECURED", color = rank.color, letterSpacing = 8.sp, fontSize = 12.sp)
             Text(rank.label, color = Color.White, fontSize = 56.sp, fontWeight = FontWeight.Black)
@@ -584,14 +781,111 @@ fun RankUpOverlay(rank: Rank, onDismiss: () -> Unit) {
     }
 }
 
+// 🆕 LEVEL UP OVERLAY
 @Composable
-fun ConnectionOverlay(onRetry: () -> Unit) {
-    Box(Modifier.fillMaxSize().background(DarkObsidian).padding(32.dp), Alignment.Center) {
+fun LevelUpOverlay(event: LevelUpEvent, onDismiss: () -> Unit) {
+    val animScale = remember { Animatable(0.5f) }
+    val animAlpha = remember { Animatable(0f) }
+
+    LaunchedEffect(Unit) {
+        animScale.animateTo(1f, animationSpec = spring(dampingRatio = 0.6f, stiffness = 500f))
+        animAlpha.animateTo(1f, animationSpec = tween(300))
+    }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(0.95f))
+            .clickable { onDismiss() },
+        Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .graphicsLayer {
+                    scaleX = animScale.value
+                    scaleY = animScale.value
+                    alpha = animAlpha.value
+                }
+        ) {
+            Text(
+                "🚀 LEVEL UP! 🚀",
+                color = event.newLevel.color,
+                letterSpacing = 6.sp,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Black
+            )
+            Spacer(Modifier.height(24.dp))
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(20.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 32.dp)
+            ) {
+                // Previous Level
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Surface(
+                        shape = CircleShape,
+                        color = event.previousLevel.color.copy(0.2f),
+                        modifier = Modifier.size(80.dp),
+                        border = BorderStroke(2.dp, event.previousLevel.color)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                "${event.previousLevel.levelNum}",
+                                color = event.previousLevel.color,
+                                fontSize = 40.sp,
+                                fontWeight = FontWeight.Black
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text("BEFORE", color = Color.White.copy(0.5f), fontSize = 10.sp)
+                }
+
+                Icon(Icons.Rounded.TrendingUp, null, tint = NeonGold, modifier = Modifier.size(48.dp))
+
+                // New Level
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Surface(
+                        shape = CircleShape,
+                        color = event.newLevel.color.copy(0.2f),
+                        modifier = Modifier.size(80.dp),
+                        border = BorderStroke(2.dp, event.newLevel.color)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                "${event.newLevel.levelNum}",
+                                color = event.newLevel.color,
+                                fontSize = 40.sp,
+                                fontWeight = FontWeight.Black
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text("NOW", color = Color.White.copy(0.5f), fontSize = 10.sp)
+                }
+            }
+
+            Spacer(Modifier.height(32.dp))
+            Text(
+                "Keep grinding to reach Level ${event.newLevel.levelNum + 1}!",
+                color = Color.White.copy(0.6f),
+                fontSize = 12.sp,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
+fun ConnectionOverlay(theme: GameTheme, onRetry: () -> Unit) {
+    Box(Modifier.fillMaxSize().background(theme.bg).padding(32.dp), Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(Icons.Rounded.CloudOff, null, Modifier.size(100.dp), tint = VividRose)
-            Text("NEURAL LINK SEVERED", color = Color.White, fontWeight = FontWeight.Black, fontSize = 24.sp)
+            Text("NETWORK SEVERED", color = Color.White, fontWeight = FontWeight.Black, fontSize = 24.sp)
             Spacer(Modifier.height(40.dp))
-            GlassButton("RETRY SYNC", Icons.Rounded.Refresh, CyberBlue) { onRetry() }
+            GlassButton("RETRY SYNC", Icons.Rounded.Refresh, theme.primary, theme.bg) { onRetry() }
         }
     }
 }
