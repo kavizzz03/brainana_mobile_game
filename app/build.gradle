@@ -6,12 +6,12 @@ plugins {
 
 android {
     namespace 'com.example.brainana'
-    compileSdk 34 // Standardized to 34 (stable) or 35
+    compileSdk 36 // Standardized to 34 (stable) or 35
 
     defaultConfig {
         applicationId "com.example.brainana"
         minSdk 24
-        targetSdk 34
+        targetSdk 36
         versionCode 1
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
@@ -55,6 +55,7 @@ dependencies {
     // Lifecycle
     implementation "androidx.lifecycle:lifecycle-viewmodel-compose:2.8.0"
     implementation("com.google.android.gms:play-services-auth:21.2.0")
+    implementation libs.androidx.compose.foundation
 
     testImplementation libs.junit
     androidTestImplementation libs.androidx.junit
