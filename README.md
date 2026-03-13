@@ -55,7 +55,7 @@ Architecture: MVVM (Model-View-ViewModel) for clean state management.
 Clone the Repository:
 
 Bash
-git clone [https://github.com/yourusername/brainana.git](https://github.com/kavizzz03/brainana_mobile_game.git)
+git clone https://github.com/kavizzz03/brainana_mobile_game.git
 
 Create a project in the Firebase Console.
 
