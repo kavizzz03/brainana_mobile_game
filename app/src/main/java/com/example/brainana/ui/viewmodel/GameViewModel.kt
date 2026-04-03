@@ -17,6 +17,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.example.brainana.utils.Constants
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 enum class Screen {
     WELCOME, THEME_PICKER, INSTRUCTIONS, HOME, MODES, PLAYING, LEADERBOARD, PROFILE, AVATAR_SELECT
@@ -51,6 +52,12 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     var levelUpEvent by mutableStateOf<LevelUpEvent?>(null)
 
     var isFirstLaunch by mutableStateOf(true)
+
+    // Authentication Progress State
+    var isAuthenticating by mutableStateOf(false)
+    var authProgress by mutableStateOf(0f)
+    var authStatusMessage by mutableStateOf("")
+    var authError by mutableStateOf("")
 
     init {
         FirebaseApp.initializeApp(application)
@@ -135,21 +142,43 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // ========== AUTHENTICATION PROGRESS ==========
+    fun startAuthenticationProcess() {
+        isAuthenticating = true
+        authProgress = 0f
+        authStatusMessage = ""
+        authError = ""
+    }
+
+    private suspend fun updateAuthProgress(progress: Float, message: String) {
+        authProgress = progress
+        authStatusMessage = message
+        delay(300) // Small delay for visual effect
+    }
+
     // ========== AUTHENTICATION ==========
     fun handleSignIn(idToken: String) {
         viewModelScope.launch {
             try {
+                updateAuthProgress(0.25f, "Initializing authentication...")
                 authRepository.signInWithGoogle(idToken)
+
+                updateAuthProgress(0.5f, "Verifying credentials...")
                 val user = authRepository.getCurrentUser()
+
                 user?.let {
+                    updateAuthProgress(0.75f, "Loading profile...")
                     fetchPlayerProfile(
                         it.uid,
                         it.displayName ?: "Agent",
                         it.photoUrl?.toString() ?: ""
                     )
+                    updateAuthProgress(1f, "Syncing data...")
+                    delay(500)
                 }
             } catch (e: Exception) {
-                // Handle error
+                authError = e.message ?: "Authentication failed. Please try again."
+                isAuthenticating = false
             }
         }
     }
@@ -177,13 +206,16 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                     player = newPlayer
                 }
 
+                isAuthenticating = false
+
                 if (isFirstLaunch) {
                     navigateTo(Screen.THEME_PICKER)
                 } else {
                     navigateTo(Screen.HOME)
                 }
             } catch (e: Exception) {
-                // Handle error
+                authError = e.message ?: "Failed to load profile. Please try again."
+                isAuthenticating = false
             }
         }
     }

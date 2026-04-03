@@ -8,6 +8,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -26,6 +27,163 @@ import com.example.brainana.data.models.Rank
 import com.example.brainana.data.models.GameTheme
 import com.example.brainana.ui.theme.NeonGold
 import com.example.brainana.ui.theme.VividRose
+import kotlinx.coroutines.delay
+
+@Composable
+fun AuthProgressOverlay(
+    progress: Float,
+    statusMessage: String,
+    theme: GameTheme
+) {
+    val animatedProgress = remember { Animatable(0f) }
+
+    LaunchedEffect(progress) {
+        animatedProgress.animateTo(
+            progress,
+            animationSpec = tween(durationMillis = 500, easing = LinearEasing)
+        )
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(theme.bg.copy(alpha = 0.95f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .padding(32.dp)
+                .width(250.dp)
+        ) {
+            // Circular Progress Indicator
+            Box(
+                modifier = Modifier.size(120.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    modifier = Modifier
+                        .size(120.dp),
+                    shape = CircleShape,
+                    color = theme.primary.copy(alpha = 0.1f),
+                    border = BorderStroke(2.dp, theme.primary.copy(alpha = 0.3f))
+                ) {}
+
+                // Rotating circle border
+                val rotation = remember { Animatable(0f) }
+                LaunchedEffect(Unit) {
+                    rotation.animateTo(
+                        360f,
+                        animationSpec = infiniteRepeatable(
+                            animation = tween(2000, easing = LinearEasing),
+                            repeatMode = RepeatMode.Restart
+                        )
+                    )
+                }
+
+                Surface(
+                    modifier = Modifier
+                        .size(120.dp)
+                        .graphicsLayer {
+                            rotationZ = rotation.value
+                        },
+                    shape = CircleShape,
+                    color = Color.Transparent,
+                    border = BorderStroke(
+                        3.dp,
+                        brush = androidx.compose.ui.graphics.Brush.sweepGradient(
+                            colors = listOf(
+                                theme.primary.copy(alpha = 0.8f),
+                                theme.primary.copy(alpha = 0f)
+                            )
+                        )
+                    )
+                ) {}
+
+                // Center percentage
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.align(Alignment.Center)
+                ) {
+                    Text(
+                        "${(animatedProgress.value * 100).toInt()}%",
+                        color = theme.primary,
+                        fontSize = 32.sp,
+                        fontWeight = FontWeight.Black
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Linear Progress Bar
+            LinearProgressIndicator(
+                progress = animatedProgress.value,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(3.dp)),
+                color = theme.primary,
+                trackColor = Color.White.copy(alpha = 0.1f)
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Status Message
+            Text(
+                statusMessage,
+                color = Color.White,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Sub-message
+            Text(
+                "Neural sync in progress...",
+                color = Color.White.copy(alpha = 0.6f),
+                fontSize = 11.sp,
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Animated dots
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.align(Alignment.CenterHorizontally)
+            ) {
+                repeat(3) { index ->
+                    val animScale = remember { Animatable(0.6f) }
+
+                    LaunchedEffect(Unit) {
+                        delay(index * 150L)
+                        animScale.animateTo(
+                            1f,
+                            animationSpec = infiniteRepeatable(
+                                animation = tween(600, easing = EaseInOutQuad),
+                                repeatMode = RepeatMode.Reverse
+                            )
+                        )
+                    }
+
+                    Surface(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .graphicsLayer {
+                                scaleX = animScale.value
+                                scaleY = animScale.value
+                            },
+                        shape = CircleShape,
+                        color = theme.primary.copy(alpha = animScale.value)
+                    ) {}
+                }
+            }
+        }
+    }
+}
 
 @Composable
 fun RankUpOverlay(rank: Rank, onDismiss: () -> Unit) {

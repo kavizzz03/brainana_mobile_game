@@ -24,8 +24,10 @@ import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
 import com.example.brainana.ui.components.GlassButton
+import com.example.brainana.ui.components.AuthProgressOverlay
 import com.example.brainana.ui.viewmodel.GameViewModel
 import com.example.brainana.utils.Constants
+import androidx.compose.foundation.background
 
 @Composable
 fun WelcomeScreen(vm: GameViewModel) {
@@ -35,68 +37,123 @@ fun WelcomeScreen(vm: GameViewModel) {
     ) { res ->
         val task = GoogleSignIn.getSignedInAccountFromIntent(res.data)
         try {
+            vm.startAuthenticationProcess()
             vm.handleSignIn(task.getResult(ApiException::class.java).idToken!!)
         } catch (e: Exception) {
-            // Handle error
+            vm.authError = e.message ?: "Authentication failed"
+            vm.isAuthenticating = false
         }
     }
 
-    Column(
-        Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+    Box(
+        modifier = Modifier.fillMaxSize()
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            Surface(
-                Modifier
-                    .size(160.dp)
-                    .blur(50.dp),
-                color = vm.selectedTheme.primary.copy(0.2f),
-                shape = CircleShape
-            ) {}
-            Icon(
-                Icons.Rounded.Psychology,
-                null,
-                Modifier.size(110.dp),
-                tint = Color.White
-            )
-        }
-
-        Text(
-            "BRAINANA",
-            fontSize = 52.sp,
-            fontWeight = FontWeight.Black,
-            color = Color.White,
-            letterSpacing = 6.sp
-        )
-        Text(
-            "COGNITIVE TRAINING",
-            color = vm.selectedTheme.primary,
-            fontSize = 12.sp,
-            letterSpacing = 3.sp
-        )
-
-        Spacer(Modifier.height(80.dp))
-
-        GlassButton(
-            "SYNCHRONIZE GOOGLE",
-            Icons.Rounded.Security,
-            vm.selectedTheme.primary,
-            vm.selectedTheme.bg
+        Column(
+            Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
-            val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
-                .requestIdToken(Constants.GOOGLE_CLIENT_ID)
-                .requestEmail()
-                .build()
-            launcher.launch(GoogleSignIn.getClient(context, gso).signInIntent)
+            Box(contentAlignment = Alignment.Center) {
+                Surface(
+                    Modifier
+                        .size(160.dp)
+                        .blur(50.dp),
+                    color = vm.selectedTheme.primary.copy(0.2f),
+                    shape = CircleShape
+                ) {}
+                Icon(
+                    Icons.Rounded.Psychology,
+                    null,
+                    Modifier.size(110.dp),
+                    tint = Color.White
+                )
+            }
+
+            Text(
+                "BRAINANA",
+                fontSize = 52.sp,
+                fontWeight = FontWeight.Black,
+                color = Color.White,
+                letterSpacing = 6.sp
+            )
+            Text(
+                "COGNITIVE TRAINING",
+                color = vm.selectedTheme.primary,
+                fontSize = 12.sp,
+                letterSpacing = 3.sp
+            )
+
+            Spacer(Modifier.height(80.dp))
+
+            GlassButton(
+                "SYNCHRONIZE GOOGLE",
+                Icons.Rounded.Security,
+                vm.selectedTheme.primary,
+                vm.selectedTheme.bg
+            ) {
+                val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+                    .requestIdToken(Constants.GOOGLE_CLIENT_ID)
+                    .requestEmail()
+                    .build()
+                launcher.launch(GoogleSignIn.getClient(context, gso).signInIntent)
+            }
+
+            TextButton(onClick = { vm.proceedFromWelcome() }) {
+                Text(
+                    "ENTER AS GUEST",
+                    color = Color.White.copy(0.4f),
+                    fontSize = 11.sp
+                )
+            }
         }
 
-        TextButton(onClick = { vm.proceedFromWelcome() }) {
-            Text(
-                "ENTER AS GUEST",
-                color = Color.White.copy(0.4f),
-                fontSize = 11.sp
+        // Authentication Progress Overlay
+        if (vm.isAuthenticating) {
+            AuthProgressOverlay(
+                progress = vm.authProgress,
+                statusMessage = vm.authStatusMessage,
+                theme = vm.selectedTheme
             )
+        }
+
+        // Authentication Error Display
+        if (vm.authError.isNotEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(0.7f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    modifier = Modifier
+                        .padding(32.dp),
+                    color = Color.DarkGray,
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            "AUTHENTICATION FAILED",
+                            color = Color.Red,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            vm.authError,
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        TextButton(onClick = { vm.authError = "" }) {
+                            Text("DISMISS", color = vm.selectedTheme.primary)
+                        }
+                    }
+                }
+            }
         }
     }
 }
