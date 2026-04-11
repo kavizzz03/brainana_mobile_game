@@ -1618,27 +1618,4 @@ Active Users: Growing 📈
 
 Made with ❤️ by Kavindu Bogahawatte
 
-[⭐ Star us on GitHub](https://github.com/kavizzz03/brainana_mobile_game)
-[🐛 Report Issues](https://github.com/kavizzz03/brainana_mobile_game/issues)
-[💬 Discussions](https://github.com/kavizzz03/brainana_mobile_game/discussions)
 
-```
-
----
-
-This is a **complete, detailed README.md** that includes:
-
-✅ Full installation guide
-✅ Audio system documentation
-✅ Score/XP system explained
-✅ Firebase setup (step-by-step)
-✅ Gameplay guide with screenshots/flow
-✅ Architecture documentation
-✅ File structure breakdown
-✅ API integration details
-✅ Troubleshooting guide
-✅ Contributing guidelines
-✅ Roadmap
-✅ Recent updates
-
-You can now copy this entire README.md to replace your current one! 🚀
