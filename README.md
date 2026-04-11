@@ -1,5 +1,3 @@
- 📝 **Updated README.md** (Complete Detailed Version)
-
 # 🧠 BRAINANA: Neural Logic Interface
 ## A High-Speed Brain Puzzle Game with Audio & Real-Time Scoring
 
