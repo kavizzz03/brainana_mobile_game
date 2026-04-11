@@ -22,6 +22,7 @@ import coil.compose.AsyncImage
 import com.example.brainana.data.models.Mode
 import com.example.brainana.ui.components.GlassButton
 import com.example.brainana.ui.components.TacticalKeypad
+import com.example.brainana.ui.components.FailureOverlay
 import com.example.brainana.ui.theme.GlassSurface
 import com.example.brainana.ui.theme.GlassBorder
 import com.example.brainana.ui.theme.VividRose
@@ -32,6 +33,8 @@ import kotlinx.coroutines.delay
 @Composable
 fun ArenaScreen(vm: GameViewModel) {
     var timerProgress by remember { mutableFloatStateOf(1f) }
+    var showFailureOverlay by remember { mutableStateOf(false) }
+    var lastWrongAnswer by remember { mutableIntStateOf(-1) }
 
     LaunchedEffect(vm.puzzleUrl, vm.isPaused) {
         if (vm.puzzleUrl.isNotEmpty() && !vm.isPaused) {
@@ -41,6 +44,7 @@ fun ArenaScreen(vm: GameViewModel) {
                 timerProgress -= 50f / vm.selectedMode.time
             }
             if (timerProgress <= 0) {
+                vm.handleTimeout()
                 vm.submitAnswer("-1", true)
                 vm.fetchNewPuzzle()
             }
@@ -48,6 +52,7 @@ fun ArenaScreen(vm: GameViewModel) {
     }
 
     Column(Modifier.fillMaxSize().padding(24.dp)) {
+        // Timer Progress Bar
         LinearProgressIndicator(
             progress = { timerProgress },
             modifier = Modifier
@@ -58,6 +63,7 @@ fun ArenaScreen(vm: GameViewModel) {
             trackColor = Color.White.copy(0.1f)
         )
 
+        // Score and Pause Button
         Row(
             Modifier
                 .fillMaxWidth()
@@ -79,6 +85,7 @@ fun ArenaScreen(vm: GameViewModel) {
             }
         }
 
+        // Puzzle Display
         Surface(
             modifier = Modifier
                 .weight(1f)
@@ -103,9 +110,19 @@ fun ArenaScreen(vm: GameViewModel) {
         }
 
         Spacer(Modifier.height(24.dp))
-        TacticalKeypad(vm.selectedTheme.primary) { vm.submitAnswer(it) }
+
+        // Answer Keypad
+        TacticalKeypad(vm.selectedTheme.primary) { input ->
+            if (input.toIntOrNull() != vm.solution && input != "-1") {
+                // ========== WRONG ANSWER - SHOW OVERLAY WITHOUT CORRECT ANSWER ==========
+                showFailureOverlay = true
+                lastWrongAnswer = vm.solution
+            }
+            vm.submitAnswer(input)
+        }
     }
 
+    // ========== PAUSE OVERLAY ==========
     if (vm.isPaused) {
         Box(
             Modifier
@@ -122,23 +139,39 @@ fun ArenaScreen(vm: GameViewModel) {
                     fontSize = 26.sp
                 )
                 Spacer(Modifier.height(40.dp))
+
                 GlassButton(
                     "RESUME",
                     Icons.Rounded.PlayArrow,
                     vm.selectedTheme.primary,
                     vm.selectedTheme.bg
                 ) { vm.isPaused = false }
+
                 Spacer(Modifier.height(12.dp))
+
                 GlassButton(
-                    "ABORT",
+                    "ABORT GAME",
                     Icons.Rounded.Close,
                     VividRose,
                     vm.selectedTheme.bg
                 ) {
                     vm.isPaused = false
+                    vm.abortGame()
                     vm.navigateTo(Screen.HOME)
                 }
             }
         }
+    }
+
+    // ========== FAILURE OVERLAY (Wrong Answer) ==========
+    // ✅ NOW: Only shows "INCORRECT ANSWER" - NOT the correct answer
+    if (showFailureOverlay) {
+        FailureOverlay(
+            showCorrectAnswer = false,  // ✅ Don't show correct answer
+            correctAnswer = lastWrongAnswer,
+            currentScore = vm.currentScore,
+            scorePenalty = 5,
+            onDismiss = { showFailureOverlay = false }
+        )
     }
 }

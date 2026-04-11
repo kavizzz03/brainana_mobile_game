@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.brainana.data.models.*
 import com.example.brainana.data.preferences.GamePreferences
 import com.example.brainana.data.repository.*
+import com.example.brainana.utils.AudioManager
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.firebase.FirebaseApp
@@ -32,12 +33,23 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     private val leaderboardRepository = LeaderboardRepository()
     private val gamePreferences = GamePreferences(application)
 
+    // Audio Management
+    private lateinit var audioManager: AudioManager
+
     // UI State
     var currentScreen by mutableStateOf(Screen.WELCOME)
     var backStack = mutableStateListOf(Screen.WELCOME)
     var player by mutableStateOf(Player())
 
+    // ========== SCORE MANAGEMENT ==========
+    // currentScore = Session score (during gameplay, resets after game ends)
     var currentScore by mutableStateOf(0)
+
+    // sessionHighScore = Best score in THIS session
+    var sessionHighScore by mutableStateOf(0)
+
+    // player.highScore = Permanent high score (saved to DB)
+
     var selectedMode by mutableStateOf(Mode.MEDIUM)
     var selectedTheme by mutableStateOf(GameTheme.NEURAL)
 
@@ -53,6 +65,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
     var isFirstLaunch by mutableStateOf(true)
 
+    // Game Over State
+    var isGameOver by mutableStateOf(false)
+    var gameOverReason by mutableStateOf("") // "timeout" or "manual"
+
     // Authentication Progress State
     var isAuthenticating by mutableStateOf(false)
     var authProgress by mutableStateOf(0f)
@@ -61,6 +77,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         FirebaseApp.initializeApp(application)
+
+        // ========== AUDIO SETUP ==========
+        audioManager = AudioManager(application)
+        audioManager.playBackgroundMusic()
+
         loadLocalData()
         checkNetwork(application)
 
@@ -153,7 +174,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun updateAuthProgress(progress: Float, message: String) {
         authProgress = progress
         authStatusMessage = message
-        delay(300) // Small delay for visual effect
+        delay(300)
     }
 
     // ========== AUTHENTICATION ==========
@@ -228,67 +249,129 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ========== GAME MECHANICS ==========
+    // ========== START GAME ==========
+    fun startGameSession() {
+        currentScore = 0
+        sessionHighScore = 0
+        isGameOver = false
+        gameOverReason = ""
+        fetchNewPuzzle()
+    }
+
+    // ========== GAME MECHANICS WITH AUDIO ==========
     fun submitAnswer(input: String, timeout: Boolean = false) {
         if (isPaused || !isOnline) return
 
         val correct = !timeout && input.toIntOrNull() == solution
-        val xpGain = if (correct) {
-            Constants.CORRECT_ANSWER_XP * selectedMode.bonus
-        } else {
-            Constants.WRONG_ANSWER_XP
-        }
 
-        val prevRank = Rank.fromXp(player.totalEarnings)
-        val prevLevel = Level.fromXp(player.totalEarnings)
-
+        // ========== UPDATE CURRENT SCORE ONLY ==========
         currentScore = (currentScore + if (correct) 10 else -5).coerceAtLeast(0)
-        val newXp = (player.totalEarnings + xpGain).coerceAtLeast(0)
 
-        val nextRank = Rank.fromXp(newXp)
-        val nextLevel = Level.fromXp(newXp)
-
-        // Check for Rank Up
-        if (nextRank.minXp > prevRank.minXp) {
-            newRankReached = nextRank
+        // Update session high score if current score is higher
+        if (currentScore > sessionHighScore) {
+            sessionHighScore = currentScore
         }
 
-        // Check for Level Up
-        if (nextLevel.levelNum > prevLevel.levelNum) {
-            levelUpEvent = LevelUpEvent(prevLevel, nextLevel)
-        }
+        // ========== XP LOGIC - ONLY ON CORRECT ANSWER ==========
+        if (correct) {
+            val xpGain = Constants.CORRECT_ANSWER_XP * selectedMode.bonus
+            val prevRank = Rank.fromXp(player.totalEarnings)
+            val prevLevel = Level.fromXp(player.totalEarnings)
 
-        val newLevelNum = nextLevel.levelNum
-        player = player.copy(
-            totalEarnings = newXp,
-            highScore = if (currentScore > player.highScore) currentScore else player.highScore,
-            level = newLevelNum
-        )
+            val newXp = (player.totalEarnings + xpGain).coerceAtLeast(0)
+            val nextRank = Rank.fromXp(newXp)
+            val nextLevel = Level.fromXp(newXp)
 
-        // Save to preferences
-        gamePreferences.setHighScore(player.highScore)
-        gamePreferences.setTotalXp(player.totalEarnings)
-        gamePreferences.setLevel(newLevelNum)
+            // ========== AUDIO EFFECTS ==========
+            playAudioEffect("correct")
 
-        // Save to Firebase if authenticated
-        if (!player.isGuest) {
-            viewModelScope.launch {
-                try {
-                    playerRepository.updatePlayerStats(
-                        player.uid,
-                        player.highScore,
-                        player.totalEarnings,
-                        newLevelNum
-                    )
-                } catch (e: Exception) {
-                    // Handle error
+            // Check for Rank Up
+            if (nextRank.minXp > prevRank.minXp) {
+                newRankReached = nextRank
+                playAudioEffect("rankup")
+            }
+
+            // Check for Level Up
+            if (nextLevel.levelNum > prevLevel.levelNum) {
+                levelUpEvent = LevelUpEvent(prevLevel, nextLevel)
+                playAudioEffect("levelup")
+            }
+
+            val newLevelNum = nextLevel.levelNum
+
+            // ========== UPDATE PERMANENT STATS (XP, Level, DB) ==========
+            player = player.copy(
+                totalEarnings = newXp,
+                highScore = if (sessionHighScore > player.highScore) sessionHighScore else player.highScore,
+                level = newLevelNum
+            )
+
+            // Save to preferences (permanent)
+            gamePreferences.setHighScore(player.highScore)
+            gamePreferences.setTotalXp(player.totalEarnings)
+            gamePreferences.setLevel(newLevelNum)
+
+            // Save to Firebase if authenticated (permanent)
+            if (!player.isGuest) {
+                viewModelScope.launch {
+                    try {
+                        playerRepository.updatePlayerStats(
+                            player.uid,
+                            player.highScore,
+                            player.totalEarnings,
+                            newLevelNum
+                        )
+                    } catch (e: Exception) {
+                        // Handle error
+                    }
                 }
             }
-        }
 
-        if (correct) {
             fetchNewPuzzle()
+        } else {
+            // ========== WRONG ANSWER ==========
+            playAudioEffect("wrong")
+
+            // Don't add XP on wrong answer
+            // Don't modify player permanent stats
+            // Just show failure overlay
+            println("❌ Wrong answer! Current Score: $currentScore (XP NOT affected)")
         }
+    }
+
+    // ========== TIMEOUT HANDLING ==========
+    fun handleTimeout() {
+        playAudioEffect("timeout")
+        println("⏱️ Time out! Current Score: $currentScore (XP NOT affected)")
+        // Game continues, no XP penalty
+    }
+
+    // ========== END GAME SESSION ==========
+    fun endGameSession(reason: String = "manual") {
+        isGameOver = true
+        gameOverReason = reason
+
+        println("🎮 Game Over!")
+        println("📊 Session Stats:")
+        println("  - Current Score: $currentScore")
+        println("  - Session High: $sessionHighScore")
+        println("  - Permanent High: ${player.highScore}")
+        println("  - Total XP: ${player.totalEarnings}")
+        println("  - Level: ${player.level}")
+
+        // ========== CLEAR SESSION SCORE (Not permanent scores) ==========
+        currentScore = 0
+    }
+
+    // ========== ABORT GAME - RESET SESSION SCORE ==========
+    fun abortGame() {
+        currentScore = 0
+        sessionHighScore = 0
+        isGameOver = false
+        gameOverReason = ""
+
+        println("⛔ Game aborted")
+        println("✅ Permanent XP and Level kept: ${player.totalEarnings} XP")
     }
 
     // ========== PUZZLE FETCHING ==========
@@ -320,6 +403,27 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // ========== AUDIO CONTROL ==========
+    fun playAudioEffect(effectType: String) {
+        audioManager.playSoundEffect(effectType)
+    }
+
+    fun setAudioVolume(volume: Float) {
+        audioManager.setVolume(volume)
+    }
+
+    fun toggleAudioMute() {
+        audioManager.toggleMute()
+    }
+
+    fun pauseAudio() {
+        audioManager.pauseBackgroundMusic()
+    }
+
+    fun resumeAudio() {
+        audioManager.resumeBackgroundMusic()
+    }
+
     // ========== SIGN OUT ==========
     fun signOut(context: Context) {
         authRepository.signOut()
@@ -331,5 +435,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         backStack.clear()
         backStack.add(Screen.WELCOME)
         currentScreen = Screen.WELCOME
+    }
+
+    override fun onCleared() {
+        audioManager.release()
+        super.onCleared()
     }
 }
